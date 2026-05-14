@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="disclaimer">
+  <strong>Read this first.</strong> This bot is a research framework, not a guaranteed money-maker.
+  Use a <strong>paper</strong> account first. Your API keys stay in this server's memory only
+  for the duration of your session; they are never written to disk.
+</div>
+
+<div class="card">
+  <h2>Connect your Alpaca account</h2>
+  <form method="POST" action="{{ url_for('connect') }}">
+    <label>API Key ID</label>
+    <input type="text" name="api_key" autocomplete="off" required>
+    <label>API Secret Key</label>
+    <input type="password" name="api_secret" autocomplete="off" required>
+    <label style="margin-top:1rem">
+      <input type="checkbox" name="paper" checked> Use paper trading endpoint (recommended)
+    </label>
+    <p style="margin-top:1rem"><button type="submit">Connect</button></p>
+  </form>
+  <p class="muted">
+    Get keys at <code>app.alpaca.markets</code> → Paper Trading → API Keys.
+  </p>
+</div>
+{% endblock %}
