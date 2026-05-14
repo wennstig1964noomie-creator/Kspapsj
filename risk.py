@@ -1,14 +1,15 @@
-"""Risk management helpers."""
+"""Risk management helpers (ATR-based exits, vol-targeted sizing)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from config import (
+    ATR_STOP_MULT,
+    ATR_TARGET_MULT,
     DAILY_MAX_LOSS_PCT,
     MAX_POSITION_PCT,
     MAX_POSITIONS,
-    STOP_LOSS_PCT,
-    TAKE_PROFIT_PCT,
+    RISK_PER_TRADE_PCT,
 )
 
 
@@ -21,26 +22,33 @@ class TradePlan:
     target: float
 
 
-def position_size(equity: float, price: float, confidence: float) -> int:
-    """Kelly-lite sizing: scale position with model confidence, capped."""
-    # confidence in [0.5, 1.0] → fraction in [0, MAX_POSITION_PCT]
-    edge = max(0.0, min(1.0, (confidence - 0.5) * 2))
-    fraction = MAX_POSITION_PCT * edge
-    dollars = equity * fraction
-    return max(0, int(dollars // price))
+def plan_trade(symbol: str, price: float, atr: float, equity: float, score: float) -> TradePlan | None:
+    """Volatility-targeted position sizing.
 
+    Risk a fixed % of equity per trade. Position size = (equity * risk%) / stop_distance.
+    Then cap at MAX_POSITION_PCT of equity. Confidence scales the risk fraction.
+    """
+    if atr <= 0 or price <= 0:
+        return None
+    stop_distance = ATR_STOP_MULT * atr
+    target_distance = ATR_TARGET_MULT * atr
+    stop = price - stop_distance
+    target = price + target_distance
+    if stop <= 0:
+        return None
 
-def plan_trade(symbol: str, price: float, equity: float, confidence: float) -> TradePlan | None:
-    qty = position_size(equity, price, confidence)
+    # Score in [0,1] → risk fraction in [0, RISK_PER_TRADE_PCT]
+    risk_fraction = RISK_PER_TRADE_PCT * max(0.0, min(1.0, score))
+    dollar_risk = equity * risk_fraction
+    qty_by_risk = int(dollar_risk // stop_distance)
+    qty_by_cap = int((equity * MAX_POSITION_PCT) // price)
+    qty = max(0, min(qty_by_risk, qty_by_cap))
     if qty <= 0:
         return None
-    stop = price * (1 - STOP_LOSS_PCT)
-    target = price * (1 + TAKE_PROFIT_PCT)
     return TradePlan(symbol=symbol, qty=qty, entry=price, stop=stop, target=target)
 
 
 def trading_halted(account) -> tuple[bool, str]:
-    """Halt trading if daily PnL breached or pattern-day-trader flagged."""
     equity = float(account.equity)
     last_equity = float(account.last_equity)
     if last_equity > 0:

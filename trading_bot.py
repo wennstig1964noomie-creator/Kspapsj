@@ -1,4 +1,4 @@
-"""Live trading loop. Pulls bars, scores them with the ML model, places trades."""
+"""Live trading loop. Scores symbols with the rule-based strategy and trades."""
 from __future__ import annotations
 
 import logging
@@ -6,13 +6,14 @@ from datetime import datetime
 
 from alpaca_client import AlpacaClient, AlpacaCredentials
 from config import (
+    BARS_LOOKBACK_DAYS,
+    BARS_TIMEFRAME,
     DEFAULT_SYMBOLS,
-    FEATURE_LOOKBACK,
-    MIN_SIGNAL_CONFIDENCE,
-    TRAIN_BAR_TIMEFRAME,
+    MIN_SIGNAL_SCORE,
+    REGIME_SYMBOL,
 )
-from ml_model import SignalModel
 from risk import can_open_new_position, plan_trade, trading_halted
+from strategy import evaluate, market_regime_ok
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,6 @@ class TradingBot:
     def __init__(self, creds: AlpacaCredentials, symbols: list[str] | None = None):
         self.client = AlpacaClient(creds)
         self.symbols = symbols or DEFAULT_SYMBOLS
-        self.model: SignalModel | None = SignalModel.load()
         self.last_run: datetime | None = None
         self.last_status: str = "Idle"
         self.recent_trades: list[dict] = []
@@ -45,20 +45,13 @@ class TradingBot:
                 }
                 for p in positions
             ],
-            "model_loaded": self.model is not None,
-            "model_auc": getattr(self.model, "auc", None),
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "last_status": self.last_status,
             "recent_trades": self.recent_trades[-25:],
         }
 
     def run_once(self) -> None:
-        """One evaluation cycle. Idempotent; safe to call on a schedule."""
         self.last_run = datetime.utcnow()
-        if self.model is None:
-            self.last_status = "No model trained yet. Run train.py first."
-            log.warning(self.last_status)
-            return
 
         if not self.client.is_market_open():
             self.last_status = "Market closed; skipping."
@@ -71,33 +64,48 @@ class TradingBot:
             log.warning(self.last_status)
             return
 
+        # Market regime check — only trade when broad market is in an uptrend.
+        try:
+            spy_bars = self.client.get_bars(REGIME_SYMBOL, "1Day", days=400)
+            if not market_regime_ok(spy_bars):
+                self.last_status = f"Regime off: {REGIME_SYMBOL} below 200-day SMA."
+                return
+        except Exception as e:
+            log.exception("regime check failed: %s", e)
+            self.last_status = f"Regime check failed: {e}"
+            return
+
         positions = {p.symbol: p for p in self.client.positions()}
         equity = float(account.equity)
         opened = 0
+        evaluated = 0
+        candidates: list[tuple[float, str, object]] = []
 
+        # Score everything first, then enter the best candidates.
         for symbol in self.symbols:
+            if symbol in positions:
+                continue
             try:
-                if symbol in positions:
-                    continue  # already in this name; bracket order handles exit
-                if not can_open_new_position(len(positions) + opened):
-                    break
-
-                bars = self.client.get_bars(symbol, TRAIN_BAR_TIMEFRAME, days=30)
-                if len(bars) < FEATURE_LOOKBACK:
+                bars = self.client.get_bars(symbol, BARS_TIMEFRAME, days=BARS_LOOKBACK_DAYS)
+                if len(bars) < 200:
                     continue
-
-                prob_up = self.model.predict_proba(bars)
-                if prob_up != prob_up:  # NaN
+                sig = evaluate(bars)
+                evaluated += 1
+                if sig is None or sig.score < MIN_SIGNAL_SCORE:
                     continue
+                candidates.append((sig.score, symbol, sig))
+            except Exception as e:
+                log.exception("scoring %s failed: %s", symbol, e)
 
-                if prob_up < MIN_SIGNAL_CONFIDENCE:
-                    continue
+        candidates.sort(key=lambda t: t[0], reverse=True)
 
-                price = float(bars["close"].iloc[-1])
-                plan = plan_trade(symbol, price, equity, prob_up)
-                if plan is None:
-                    continue
-
+        for score, symbol, sig in candidates:
+            if not can_open_new_position(len(positions) + opened):
+                break
+            plan = plan_trade(symbol, sig.price, sig.atr, equity, score)
+            if plan is None:
+                continue
+            try:
                 order = self.client.submit_bracket_buy(
                     symbol=plan.symbol,
                     qty=plan.qty,
@@ -105,19 +113,21 @@ class TradingBot:
                     stop_loss=plan.stop,
                 )
                 opened += 1
-                trade = {
+                self.recent_trades.append({
                     "time": datetime.utcnow().isoformat(),
                     "symbol": symbol,
                     "qty": plan.qty,
                     "entry": plan.entry,
                     "stop": plan.stop,
                     "target": plan.target,
-                    "confidence": round(prob_up, 4),
+                    "confidence": round(score, 4),
+                    "reasons": ", ".join(sig.reasons),
                     "order_id": str(order.id),
-                }
-                self.recent_trades.append(trade)
-                log.info("Opened %s", trade)
+                })
+                log.info("Opened %s qty=%d score=%.2f", symbol, plan.qty, score)
             except Exception as e:
-                log.exception("Error evaluating %s: %s", symbol, e)
+                log.exception("order submit failed for %s: %s", symbol, e)
 
-        self.last_status = f"Cycle complete. Opened {opened} new position(s)."
+        self.last_status = (
+            f"Evaluated {evaluated}, {len(candidates)} passed threshold, opened {opened}."
+        )

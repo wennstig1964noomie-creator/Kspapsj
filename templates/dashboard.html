@@ -3,29 +3,15 @@
 <div class="row">
   <div class="card">
     <h2>Account</h2>
-    <p>
-      Mode: <span class="pill {% if status.paper %}gray{% else %}red{% endif %}">{{ 'PAPER' if status.paper else 'LIVE' }}</span>
-    </p>
+    <p>Mode: <span class="pill {% if status.paper %}gray{% else %}red{% endif %}">{{ 'PAPER' if status.paper else 'LIVE' }}</span></p>
     <p>Equity: <strong>${{ '%.2f' % status.equity }}</strong></p>
     <p>Cash: ${{ '%.2f' % status.cash }}</p>
     <p>Buying power: ${{ '%.2f' % status.buying_power }}</p>
   </div>
   <div class="card">
-    <h2>Model</h2>
-    {% if status.model_loaded %}
-      <p><span class="pill green">Loaded</span></p>
-      <p>Validation AUC: <strong>{{ '%.4f' % status.model_auc }}</strong></p>
-      <p class="muted">AUC &gt; 0.5 means the model has some edge on held-out data. Re-train regularly.</p>
-    {% else %}
-      <p><span class="pill red">No model</span></p>
-      <p class="muted">Train one — it'll pull ~3 years of bars and fit LightGBM. Takes 1-3 minutes.</p>
-    {% endif %}
-    <form method="POST" action="{{ url_for('train_route') }}" class="inline">
-      <button class="secondary">{{ 'Retrain' if status.model_loaded else 'Train model' }}</button>
-    </form>
-    {% if training_status %}
-      <p class="muted" style="margin-top:.5rem">Training: {{ training_status }}</p>
-    {% endif %}
+    <h2>Strategy</h2>
+    <p><span class="pill green">Built-in</span></p>
+    <p class="muted">Rule-based multi-factor: trend + momentum + pullback RSI + ADX + MACD + volume. Regime filter on SPY 200-day SMA. ATR-based stops and 2:1 reward:risk targets. No training needed.</p>
   </div>
   <div class="card">
     <h2>Bot</h2>
@@ -71,7 +57,7 @@
   <h2>Recent trades opened by the bot</h2>
   {% if status.recent_trades %}
     <table>
-      <thead><tr><th>Time (UTC)</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>Confidence</th></tr></thead>
+      <thead><tr><th>Time (UTC)</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Stop</th><th>Target</th><th>Score</th><th>Reasons</th></tr></thead>
       <tbody>
       {% for t in status.recent_trades|reverse %}
         <tr>
@@ -82,6 +68,7 @@
           <td>${{ '%.2f' % t.stop }}</td>
           <td>${{ '%.2f' % t.target }}</td>
           <td>{{ '%.2f' % (t.confidence * 100) }}%</td>
+          <td class="muted">{{ t.reasons or '' }}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -92,7 +79,6 @@
 </div>
 
 <div class="disclaimer">
-  This bot can — and likely will — lose money in some periods. Trade with capital you can afford to lose.
-  Always paper-trade for at least several weeks before considering live use, and re-evaluate the model regularly.
+  Real money is at risk. Paper-trade for at least a few weeks. Past performance of any strategy does not predict future results.
 </div>
 {% endblock %}

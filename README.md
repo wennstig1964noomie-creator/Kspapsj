@@ -1,61 +1,68 @@
 # AI Alpaca Trading Bot
 
-A research framework for an automated equities trader on [Alpaca](https://alpaca.markets).
-A LightGBM classifier scores short-horizon direction from technical features; a Flask
-dashboard lets users paste their API keys and start/stop the bot.
+A 24/7 automated equities bot for [Alpaca](https://alpaca.markets). Paste your API keys
+into the web dashboard and click **Start** — no training, no setup. The bot uses a
+built-in rule-based multi-factor strategy.
 
-> **No bot is guaranteed to be profitable.** Markets are non-stationary; a model that
-> backtests well can lose money live. Paper-trade first, monitor closely, and only
-> commit capital you can afford to lose. This software is provided "as is" without warranty.
+> **No strategy is guaranteed to be profitable.** Markets change; what worked last year
+> may not work this year. Paper-trade first. Only commit capital you can afford to lose.
 
-## What's in the box
+## The built-in strategy
 
-| File | Purpose |
-| --- | --- |
-| `features.py` | Builds ~20 technical indicators (RSI, MACD, Bollinger, ADX, MFI, OBV, ATR, returns…) |
-| `ml_model.py` | LightGBM binary classifier with time-ordered train/val split |
-| `train.py` | CLI to pull history from Alpaca and train the model |
-| `alpaca_client.py` | Wrapper around `alpaca-py` for bars + orders |
-| `risk.py` | Position sizing (confidence-scaled), stop-loss, daily-loss kill switch |
-| `trading_bot.py` | Evaluation loop: pull bars → score → place bracket order |
-| `app.py` + `templates/` | Flask UI for key entry, start/stop, monitoring |
-| `config.py` | Knobs: universe, risk caps, thresholds, intervals |
+It's not a single signal but a weighted combination of well-established quant rules:
 
-## Quick start
+1. **Market regime filter** — only trades when SPY is above its 200-day SMA. Steps aside during confirmed downtrends.
+2. **Trend filter** — symbol must trade above its 50-EMA, which must be above its 200-EMA, and both EMAs must be rising.
+3. **Momentum** — recent 60-bar return contributes to the score.
+4. **Pullback RSI** — gives extra weight to symbols with RSI 35–55 (healthy dip in an uptrend) and refuses to chase RSI > 70.
+5. **Trend strength (ADX)** — higher ADX = stronger trend = bigger score.
+6. **MACD histogram** — positive and rising adds to score.
+7. **Volume confirmation** — recent volume above its 20-bar average adds to score.
+8. **Proximity to 50-bar highs** — a breakout bonus.
+
+A symbol must pass all hard filters AND score ≥ 0.55 to be eligible. The bot ranks
+candidates by score and opens up to 5 positions, biggest-score-first.
+
+### Position sizing & exits
+- **Volatility-targeted sizing**: risk 1% of equity per trade, calculated as `equity * 1% / (2 × ATR)`. High-volatility names automatically get smaller positions.
+- **Cap**: never more than 15% of equity in a single name.
+- **Exits**: bracket orders with stop at `entry – 2×ATR` and target at `entry + 4×ATR` (2:1 reward:risk).
+- **Kill switch**: bot halts for the day if equity drops >3%.
+
+## Run it
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# 1. Train (uses your Alpaca paper keys to pull historical bars)
-export APCA_API_KEY_ID=...
-export APCA_API_SECRET_KEY=...
-python train.py
-
-# 2. Run the dashboard
 python app.py
-# → open http://localhost:5000, paste keys, start the bot
+# → open http://localhost:5000, paste keys, click Start
 ```
 
-## How it works
+## Deploy from your phone (Render.com)
 
-1. **Universe:** ~20 large-cap US equities + major ETFs (editable in `config.py`).
-2. **Features:** momentum, trend, volatility, and volume indicators on 1-hour bars.
-3. **Label:** does close 4 bars from now exceed today's close? (binary)
-4. **Model:** LightGBM with early-stopping on a time-ordered hold-out (no shuffling — that's the most common cause of fake backtest profits).
-5. **Trade decision:** if `P(up) ≥ MIN_SIGNAL_CONFIDENCE` (default 0.58), open a bracket order — stop ~2% below entry, target ~4% above.
-6. **Position sizing:** Kelly-lite — fraction of equity scales with how far the model's confidence is above 0.5, capped at 15% per name.
-7. **Risk caps:** max 5 concurrent positions, halts trading for the day if equity drops >3%.
+1. Get Alpaca paper keys at app.alpaca.markets
+2. render.com → New → Blueprint → connect this repo (auto-detects `render.yaml`)
+3. Apply, wait ~3 min for the build
+4. Open the Render URL in Safari, paste keys, click **Start**
 
-## Tuning honestly
+The free Render tier sleeps after 15 min idle. For a 24/7 bot use the Starter plan
+($7/mo) — already specified in `render.yaml`.
 
-- The defaults are *starting points*, not optimums. Re-train on fresh data, sweep `MIN_SIGNAL_CONFIDENCE`, `STOP_LOSS_PCT`, and `TAKE_PROFIT_PCT` against your own validation period.
-- Watch for **distribution shift**: a model trained on a bull market can fail in a bear market. Re-train at least monthly.
-- **Validation AUC** is shown in the dashboard. AUC near 0.5 means no edge — don't trade.
-- Consider adding: per-symbol models, regime filters (e.g., trade only when SPY is above its 200-day SMA), or shorting logic.
+## Tuning
 
-## Security notes
+All knobs are in `config.py`:
+- Universe (`DEFAULT_SYMBOLS`)
+- Entry threshold (`MIN_SIGNAL_SCORE`)
+- Per-trade risk (`RISK_PER_TRADE_PCT`)
+- Position cap (`MAX_POSITION_PCT`), max concurrent (`MAX_POSITIONS`)
+- Stop/target multiples (`ATR_STOP_MULT`, `ATR_TARGET_MULT`)
+- Daily kill switch (`DAILY_MAX_LOSS_PCT`)
+- Trade cadence (`TRADE_INTERVAL_MINUTES`)
 
-- API keys live in server memory only for the duration of the session; nothing is written to disk.
-- For multi-user deployment behind a public URL, put the app behind HTTPS and a real session backend, and rotate `FLASK_SECRET_KEY`.
-- Paper-trading endpoint is the default and recommended.
+All signal weights and filter thresholds live in `strategy.py` — edit them there.
+
+## Honest caveats
+
+- "Pre-equipped" doesn't mean "pre-profitable". This is a sensible default strategy, not magic.
+- Backtest the strategy against your universe before live trading.
+- Watch for regime shifts. The SPY 200-day filter helps but isn't a complete defense.
+- Trading commissions on Alpaca are zero, but **slippage and the bid-ask spread are real costs** you'll see in live results that don't show in idealized backtests.
