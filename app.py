@@ -10,6 +10,7 @@ from flask_session import Session
 
 import config
 from alpaca_client import AlpacaCredentials
+from ml_model import train as train_model
 from trading_bot import TradingBot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -21,8 +22,34 @@ Session(app)
 
 _bots: dict[str, TradingBot] = {}
 _bot_lock = threading.Lock()
+_training: dict[str, str] = {}  # sid -> status string
 _scheduler = BackgroundScheduler(daemon=True)
 _scheduler.start()
+
+
+def _do_training(sid: str, bot: TradingBot) -> None:
+    try:
+        _training[sid] = "Fetching historical bars from Alpaca…"
+        bars_by_symbol = {}
+        for sym in bot.symbols:
+            try:
+                df = bot.client.get_bars(sym, config.TRAIN_BAR_TIMEFRAME, days=config.LOOKBACK_DAYS)
+                if not df.empty:
+                    bars_by_symbol[sym] = df
+                    _training[sid] = f"Fetched {sym} ({len(bars_by_symbol)}/{len(bot.symbols)})…"
+            except Exception as e:
+                logging.exception("fetch %s failed: %s", sym, e)
+        if not bars_by_symbol:
+            _training[sid] = "Training failed: no data fetched."
+            return
+        _training[sid] = f"Training on {len(bars_by_symbol)} symbols…"
+        model = train_model(bars_by_symbol)
+        model.save()
+        bot.model = model
+        _training[sid] = f"Done. Validation AUC={model.auc:.4f}"
+    except Exception as e:
+        logging.exception("training failed: %s", e)
+        _training[sid] = f"Training failed: {e}"
 
 
 def _bot_for_session() -> TradingBot | None:
@@ -43,8 +70,15 @@ def index():
     except Exception as e:
         flash(f"Could not load account: {e}", "error")
         return redirect(url_for("logout"))
-    running = _scheduler.get_job(_job_id(session["sid"])) is not None
-    return render_template("dashboard.html", status=status, running=running)
+    sid = session["sid"]
+    running = _scheduler.get_job(_job_id(sid)) is not None
+    training_status = _training.get(sid)
+    return render_template(
+        "dashboard.html",
+        status=status,
+        running=running,
+        training_status=training_status,
+    )
 
 
 @app.route("/connect", methods=["POST"])
@@ -100,6 +134,22 @@ def stop():
         if job:
             job.remove()
             flash("Bot stopped.", "ok")
+    return redirect(url_for("index"))
+
+
+@app.route("/train", methods=["POST"])
+def train_route():
+    bot = _bot_for_session()
+    if bot is None:
+        return redirect(url_for("index"))
+    sid = session["sid"]
+    current = _training.get(sid, "")
+    if current and not (current.startswith("Done") or current.startswith("Training failed")):
+        flash("Training already in progress.", "ok")
+        return redirect(url_for("index"))
+    _training[sid] = "Starting…"
+    threading.Thread(target=_do_training, args=(sid, bot), daemon=True).start()
+    flash("Training started in the background. Refresh to see progress.", "ok")
     return redirect(url_for("index"))
 
 

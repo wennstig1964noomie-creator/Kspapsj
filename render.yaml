@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: ai-alpaca-trading-bot
+    runtime: python
+    plan: starter
+    branch: claude/ai-trading-bot-IyjI9
+    buildCommand: pip install -r requirements.txt
+    # Single worker so the in-process APScheduler isn't duplicated.
+    startCommand: gunicorn --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT app:app
+    autoDeploy: true
+    envVars:
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.9
+    disk:
+      name: model-store
+      mountPath: /opt/render/project/src/models
+      sizeGB: 1

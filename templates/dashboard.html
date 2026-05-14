@@ -18,7 +18,13 @@
       <p class="muted">AUC &gt; 0.5 means the model has some edge on held-out data. Re-train regularly.</p>
     {% else %}
       <p><span class="pill red">No model</span></p>
-      <p class="muted">Run <code>python train.py</code> before starting the bot.</p>
+      <p class="muted">Train one — it'll pull ~3 years of bars and fit LightGBM. Takes 1-3 minutes.</p>
+    {% endif %}
+    <form method="POST" action="{{ url_for('train_route') }}" class="inline">
+      <button class="secondary">{{ 'Retrain' if status.model_loaded else 'Train model' }}</button>
+    </form>
+    {% if training_status %}
+      <p class="muted" style="margin-top:.5rem">Training: {{ training_status }}</p>
     {% endif %}
   </div>
   <div class="card">
